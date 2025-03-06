@@ -4,8 +4,7 @@
     // --- [CONFIGURAÇÕES] ----------------------------------------------- 
 
     const API_KEY_LYRICS = "1637b78dc3b129e6843ed674489a92d0";
-    //const API_URL = "https://twj.es/radio_info/?radio_url=";
-    const API_URL = "https://api-v2.streamafrica.net/icyv2?url=";
+    const API_URL = "https://api.twj.es/metadata.php?url=";
     const TIME_TO_REFRESH = window?.streams?.timeRefresh || 10000;
 
     // --- [CONSTANTES E VARIÁVEIS] --------------------------------------
@@ -208,121 +207,138 @@
         });
     };
 
-    const getDataFromStreamAfrica = async (artist, title, defaultArt, defaultCover) => {
-        let text;
-        if (artist === null || artist === title) {
-          text = `${title} - ${title}`;
-        } else {
-          text = `${artist} - ${title}`;
-        }
-        const cacheKey = text.toLowerCase();
-        if (cache[cacheKey]) {
-          return cache[cacheKey];
-        }
-        const API_URL = `https://api-v2.streamafrica.net/musicsearch?query=${encodeURIComponent(text)}&service=spotify`;
-        const response = await fetch(API_URL);
-      
-        if (title === "Radioplayer Demo" || response.status === 403) {
-          const results = {
-            title,
-            artist,
-            art: defaultArt,
-            cover: defaultCover,
-            stream_url: "#not-found",
-          };
-          cache[cacheKey] = results;
-          return results;
-        }
-      
-        const data = response.ok ? await response.json() : {};
-      
-        // Modificação para acessar o objeto "results" da resposta da API
-        const stream = data.results || {}; 
-      
-        if (Object.keys(stream).length === 0) {
-          const results = {
-            title,
-            artist,
-            art: defaultArt,
-            cover: defaultCover,
-            stream_url: "#not-found",
-          };
-          cache[cacheKey] = results;
-          return results;
-        }
-      
-        const results = {
-          //title: stream.title || title, // Utilizando os dados da nova resposta da API
-          //artist: stream.artist || artist,
-          title: title,
-          artist: artist,
-          thumbnail: stream.artwork?.small || defaultArt, // Acessando a URL da imagem pequena
-          art: stream.artwork?.medium || defaultArt, // Acessando a URL da imagem média
-          cover: stream.artwork?.large || defaultCover, // Acessando a URL da imagem grande
-          stream_url: stream.stream || "#not-found", // Ajustado para o novo nome da propriedade "stream"
-        };
-        cache[cacheKey] = results;
-        return results;
-    };
-
-    const getDataFromITunes = async (artist, title, defaultArt, defaultCover) => {
-        let text;
-        if (artist === title) {
-            text = `${title}`;
-        } else {
-            text = `${artist} - ${title}`;
-        }
+    async function getDataFrom({ artist, title, art, cover }) {
+        let dataFrom = {};
+        let text = artist ? `${artist} - ${title}` : title;
+    
         const cacheKey = text.toLowerCase();
         if (cache[cacheKey]) {
             return cache[cacheKey];
         }
-
-        const response = await fetch(`https://itunes.apple.com/search?limit=1&term=${encodeURIComponent(text)}`);
-        if (response.status === 403) {
-            const results = {
-                title,
-                artist,
-                art: defaultArt,
-                cover: defaultCover,
-                stream_url: "#not-found",
-            };
-            return results;
-        }
-        const data = response.ok ? await response.json() : {};
-        if (!data.results || data.results.length === 0) {
-            const results = {
-                title,
-                artist,
-                art: defaultArt,
-                cover: defaultCover,
-                stream_url: "#not-found",
-            };
-            return results;
-        }
-        const itunes = data.results[0];
-        const results = {
-            //title: itunes.trackName || title,
-            //artist: itunes.artistName || artist,
-            title: title,
-            artist: artist,
-            thumbnail: itunes.artworkUrl100 || defaultArt,
-            art: itunes.artworkUrl100 ? changeImageSize(itunes.artworkUrl100, "600x600") : defaultArt,
-            cover: itunes.artworkUrl100 ? changeImageSize(itunes.artworkUrl100, "1500x1500") : defaultCover,
-            stream_url: "#not-found",
-        };
-        cache[cacheKey] = results;
-        return results;
-    };
-
-    async function getDataFrom({ artist, title, art, cover, server }) {
-        let dataFrom = {};
-        if (server.toLowerCase() === "spotify") {
-            dataFrom = await getDataFromStreamAfrica(artist, title, art, cover);
-        } else {
+    
+        try {
+            // 1. Tenta buscar no novo endpoint de busca primeiro
+            dataFrom = await getDataFromSearch(artist, title, art, cover);
+    
+            // Se getDataFromSearch falhou e retornou #not-found, tenta o iTunes
+            if (dataFrom.stream_url === "#not-found") {
+                console.warn("Novo endpoint falhou, buscando no iTunes...");
+                dataFrom = await getDataFromITunes(artist, title, art, cover);
+            }
+    
+        } catch (error) {
+            console.error("Erro ao buscar dados:", error);
+            // 2. Em caso de erro geral, tenta o iTunes como último recurso
             dataFrom = await getDataFromITunes(artist, title, art, cover);
         }
+    
+        cache[cacheKey] = dataFrom;
         return dataFrom;
     }
+    
+    
+    async function getDataFromSearch(artist, title, defaultArt, defaultCover) {
+        let text = artist ? `${artist} - ${title}` : title;
+        const cacheKey = text.toLowerCase();
+    
+        if (cache[cacheKey]) {
+            return cache[cacheKey];
+        }
+    
+        try {
+            const response = await fetch(`https://api.twj.es/search.php?query=${encodeURIComponent(text)}`);
+            if (!response.ok) {
+                throw new Error(`Erro na requisição para o novo endpoint de busca. Status: ${response.status}`);
+            }
+            const data = await response.json();
+    
+            if (data.results) {
+                const searchResults = data.results;
+                const results = {
+                    title: searchResults.title || title,
+                    artist: searchResults.artist || artist,
+                    thumbnail: searchResults.artwork || defaultArt,
+                    art: searchResults.artwork || defaultArt,
+                    cover: searchResults.artwork || defaultCover,
+                    stream_url: searchResults.stream_url || "#not-found",
+                };
+                cache[cacheKey] = results;
+                return results;
+            } else {
+                console.log("Nenhum resultado encontrado no novo endpoint de busca.");
+                return {
+                    title,
+                    artist,
+                    art: defaultArt,
+                    cover: defaultCover,
+                    stream_url: "#not-found",
+                };
+            }
+        } catch (error) {
+            console.error("Erro ao buscar dados do novo endpoint de busca:", error);
+            return {
+                title,
+                artist,
+                art: defaultArt,
+                cover: defaultCover,
+                stream_url: "#not-found",
+            };
+        }
+    }
+
+    async function getDataFromITunes(artist, title, defaultArt, defaultCover) {
+        let text = artist ? `${artist} - ${title}` : title;
+        const cacheKey = text.toLowerCase();
+
+        if (cache[cacheKey]) {
+            return cache[cacheKey];
+        }
+
+        try {
+            const response = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(text)}&media=music&limit=1`);
+            if (!response.ok) {
+                throw new Error(`Erro na requisição para o iTunes. Status: ${response.status}`);
+            }
+            const data = await response.json();
+
+            if (data.resultCount > 0) {
+                const itunesData = data.results[0];
+                const results = {
+                    title: itunesData.trackName || title,
+                    artist: itunesData.artistName || artist,
+                    thumbnail: itunesData.artworkUrl100 || defaultArt,
+                    art: itunesData.artworkUrl100
+                        ? changeImageSize(itunesData.artworkUrl100, "600x600")
+                        : defaultArt,
+                    cover: itunesData.artworkUrl100
+                        ? changeImageSize(itunesData.artworkUrl100, "1500x1500")
+                        : defaultCover,
+                    stream_url: itunesData.trackViewUrl || "#not-found", // Adicionado trackViewUrl
+                };
+                cache[cacheKey] = results;
+                return results;
+            } else {
+                console.log("Nenhum resultado encontrado no iTunes.");
+                return {
+                    title,
+                    artist,
+                    art: defaultArt,
+                    cover: defaultCover,
+                    stream_url: "#not-found",
+                };
+            }
+        } catch (error) {
+            console.error("Erro ao buscar dados do iTunes:", error);
+            return {
+                title,
+                artist,
+                art: defaultArt,
+                cover: defaultCover,
+                stream_url: "#not-found",
+            };
+        }
+    }
+
 
     const getLyrics = async (artist, name) => {
         try {
@@ -675,6 +691,10 @@
                 cover,
                 server,
             });
+            // Verifica se é Deezer e se stream_url é inválida
+            if (server === 'deezer' && !dataFrom.stream_url) { 
+                dataFrom.stream_url = '#'; // Define como '#' para evitar link inválido
+            }
             return historyTemplate
                 .replace("{{art}}", dataFrom.thumbnail || dataFrom.art)
                 .replace("{{song}}", dataFrom.title)
@@ -729,77 +749,7 @@
         if (playButton !== null) {
             playButton.addEventListener("click", handlePlayPause);
         }
-    
-        // --- [CONTROLE DE VOLUME] --------------------------------------
-    
-        const range = document.querySelector(".player-volume");
-        const rangeFill = document.querySelector(".player-range-fill");
-        const rangeWrapper = document.querySelector(".player-range-wrapper");
-        const rangeThumb = document.querySelector(".player-range-thumb");
-        let currentVolume = parseInt(localStorage.getItem("volume") || "100", 10) || 100;
-    
-        // Rango recorrido
-        function setRangeWidth(percent) {
-            rangeFill.style.width = `${percent}%`;
-        }
-    
-        // Posición del thumb
-        function setThumbPosition(percent) {
-            const compensatedWidth = rangeWrapper.offsetWidth - rangeThumb.offsetWidth;
-            const thumbPosition = (percent / 100) * compensatedWidth;
-            rangeThumb.style.left = `${thumbPosition}px`;
-        }
-    
-        // Actualiza el volumen al cambiar el rango
-        function updateVolume(value) {
-            range.value = value;
-            setRangeWidth(value);
-            setThumbPosition(value);
-            localStorage.setItem("volume", value);
-            audio.volume = value / 100;
-        }
-    
-        // Valor inicial
-        if (range !== null) {
-            updateVolume(currentVolume);
-    
-            // Escucha el cambio del rango
-            range.addEventListener("input", (event) => {
-                updateVolume(parseInt(event.target.value, 10));
-            });
-    
-            // Escucha el click en el rango
-            rangeWrapper.addEventListener("mousedown", (event) => {
-                const rangeRect = range.getBoundingClientRect();
-                const clickX = event.clientX - rangeRect.left;
-                const percent = (clickX / range.offsetWidth) * 100;
-                const value = Math.round((range.max - range.min) * (percent / 100)) + parseInt(range.min);
-                updateVolume(value);
-            });
-    
-            // Escucha el movimiento del mouse
-            rangeThumb.addEventListener("mousedown", () => {
-                document.addEventListener("mousemove", handleThumbDrag);
-            });
-        }
-    
-        // Mueve el thumb y actualiza el volumen
-        function handleThumbDrag(event) {
-            const rangeRect = range.getBoundingClientRect();
-            const clickX = event.clientX - rangeRect.left;
-            let percent = (clickX / range.offsetWidth) * 100;
-            percent = Math.max(0, Math.min(100, percent));
-            const value = Math.round((range.max - range.min) * (percent / 100)) + parseInt(range.min);
-            updateVolume(value);
-        }
-    
-        // Deja de escuchar el movimiento del mouse
-        document.addEventListener("mouseup", () => {
-            document.removeEventListener("mousemove", handleThumbDrag);
-        });
-        
-        // --- [FIM DO CONTROLE DE VOLUME] -----------------------------
-    
+         
         // Iniciar o stream ( atualizado para evitar valor undefined )
         function init(current) {
             // Cancelar o timeout anterior
@@ -878,6 +828,77 @@
                 }
             });
         }
+
+        // --- [CONTROLE DE VOLUME] --------------------------------------
+    
+        const range = document.querySelector(".player-volume");
+        const rangeFill = document.querySelector(".player-range-fill");
+        const rangeWrapper = document.querySelector(".player-range-wrapper");
+        const rangeThumb = document.querySelector(".player-range-thumb");
+        let currentVolume = parseInt(localStorage.getItem("volume") || "100", 10) || 100;
+    
+        // Rango recorrido
+        function setRangeWidth(percent) {
+            rangeFill.style.width = `${percent}%`;
+        }
+    
+        // Posición del thumb
+        function setThumbPosition(percent) {
+            const compensatedWidth = rangeWrapper.offsetWidth - rangeThumb.offsetWidth;
+            const thumbPosition = (percent / 100) * compensatedWidth;
+            rangeThumb.style.left = `${thumbPosition}px`;
+        }
+    
+        // Actualiza el volumen al cambiar el rango
+        function updateVolume(value) {
+            range.value = value;
+            setRangeWidth(value);
+            setThumbPosition(value);
+            localStorage.setItem("volume", value);
+            audio.volume = value / 100;
+        }
+    
+        // Valor inicial
+        if (range !== null) {
+            updateVolume(currentVolume);
+    
+            // Escucha el cambio del rango
+            range.addEventListener("input", (event) => {
+                updateVolume(parseInt(event.target.value, 10));
+            });
+    
+            // Escucha el click en el rango
+            rangeWrapper.addEventListener("mousedown", (event) => {
+                const rangeRect = range.getBoundingClientRect();
+                const clickX = event.clientX - rangeRect.left;
+                const percent = (clickX / range.offsetWidth) * 100;
+                const value = Math.round((range.max - range.min) * (percent / 100)) + parseInt(range.min);
+                updateVolume(value);
+            });
+    
+            // Escucha el movimiento del mouse
+            rangeThumb.addEventListener("mousedown", () => {
+                document.addEventListener("mousemove", handleThumbDrag);
+            });
+        }
+    
+        // Mueve el thumb y actualiza el volumen
+        function handleThumbDrag(event) {
+            const rangeRect = range.getBoundingClientRect();
+            const clickX = event.clientX - rangeRect.left;
+            let percent = (clickX / range.offsetWidth) * 100;
+            percent = Math.max(0, Math.min(100, percent));
+            const value = Math.round((range.max - range.min) * (percent / 100)) + parseInt(range.min);
+            updateVolume(value);
+        }
+    
+        // Deja de escuchar el movimiento del mouse
+        document.addEventListener("mouseup", () => {
+            document.removeEventListener("mousemove", handleThumbDrag);
+        });
+        
+        // --- [FIM DO CONTROLE DE VOLUME] -----------------------------
+    
     }
 
     // --- [POP-UP DE INÍCIO E HANDLERS] --------------------------------
